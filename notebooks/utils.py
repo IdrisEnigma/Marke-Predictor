@@ -177,13 +177,5 @@ def summarize_filters(df):
     summary["% of Total"] = [f"{(c/total_companies*100):.1f}%" for c in summary["Count"]]
     return pd.DataFrame(summary)
 #----------------------------------------------------------
-def pull_large_cap_dataset():
-    """
-    Pulls the large cap dataset from a CSV file.
-    """
-    INPUT_CSV  = '../src/data-pipline/large_cap_financials.csv'
-    df = pd.read_csv(INPUT_CSV)
-    print(f"[INFO] Pulled dataset with {len(df)} tickers")
-    return df
-#----------------------------------------------------------
+
 
