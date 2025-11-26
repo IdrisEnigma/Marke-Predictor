@@ -7,6 +7,11 @@ import numpy as np
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm 
+import warnings
+
+# Ignore FutureWarnings
+#warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
     
 # FastAPI app
 app = FastAPI()
@@ -57,7 +62,7 @@ def get_interest_expense_yahoo(ticker):
         # Try multiple possible row names
         for row_name in ["Interest Expense", "InterestExpense", "InterestExpenseNonOperating"]:
             if row_name in income_stmt.index:
-                print(income_stmt.loc[row_name].iloc[0])
+                #print(income_stmt.loc[row_name].iloc[0])
                 return income_stmt.loc[row_name].iloc[0]
 
         return None
@@ -114,149 +119,101 @@ def fetch_metrics(ticker):
         annual = stock.financials.T
         quarterly = stock.quarterly_financials.T
 
-        # Latest annual revenue
         current_annual = info.get("totalRevenue")
+        prior_year_annual = safe(annual["Total Revenue"].iloc[-2]) if "Total Revenue" in annual and len(annual) >= 2 else None
+        three_years_ago_annual = safe(annual["Total Revenue"].iloc[-3]) if "Total Revenue" in annual and len(annual) >= 3 else None
 
-        # Prior year annual revenue
-        if "Total Revenue" in annual and len(annual) >= 2:
-            prior_year_annual = safe(annual["Total Revenue"].iloc[-2])
-        else:
-            prior_year_annual = None
+        current_year_q3 = safe(quarterly["Total Revenue"].iloc[-1]) if "Total Revenue" in quarterly and len(quarterly) >= 5 else None
+        prior_year_q3 = safe(quarterly["Total Revenue"].iloc[-5]) if "Total Revenue" in quarterly and len(quarterly) >= 5 else None
 
-        # 3 years ago annual revenue
-        if "Total Revenue" in annual and len(annual) >= 3:
-            three_years_ago_annual = safe(annual["Total Revenue"].iloc[-3])
-        else:
-            three_years_ago_annual = None
+        qoQ_change = (quarterly["Total Revenue"].iloc[-1] / quarterly["Total Revenue"].iloc[-2] - 1) \
+            if "Total Revenue" in quarterly and len(quarterly) >= 2 else None
 
-        # Q3 revenue
-        if "Total Revenue" in quarterly and len(quarterly) >= 5:
-            current_year_q3 = safe(quarterly["Total Revenue"].iloc[-1])
-            prior_year_q3 = safe(quarterly["Total Revenue"].iloc[-5])
-        else:
-            current_year_q3 = None
-            prior_year_q3 = None
-
-        # QoQ revenue change
-        if "Total Revenue" in quarterly and len(quarterly) >= 2:
-            qoQ_change = (
-                quarterly["Total Revenue"].iloc[-1] /
-                quarterly["Total Revenue"].iloc[-2] - 1
-            )
-        else:
-            qoQ_change = None
-
-        # Historical CAGR (3 years)
-        if current_annual and three_years_ago_annual:
-            historical_cagr_3yr = (current_annual / three_years_ago_annual) ** (1/3) - 1
-        else:
-            historical_cagr_3yr = None
+        historical_cagr_3yr = (current_annual / three_years_ago_annual) ** (1/3) - 1 \
+            if current_annual and three_years_ago_annual else None
 
         # =======================================================
-        # ANALYST ESTIMATES (2023, 2024, 2025)
+        # ANALYST ESTIMATES
         # =======================================================
         est_2023, est_2024, est_2025 = get_eps_estimates(ticker)
 
         # =======================================================
-        # FORWARD PEG (12 & 24 months)
+        # PEG RATIOS
         # =======================================================
         fwd_pe = info.get("forwardPE")
+        trailing_pe = info.get("trailingPE")
         current_eps = info.get("epsTrailingTwelveMonths")
 
-        peg_12 = peg_24 = None
-
+        peg_12 = peg_24 = current_peg = industry_peg = None
         if fwd_pe and current_eps:
             if est_2024:
                 g12 = est_2024 / current_eps - 1
                 peg_12 = fwd_pe / g12 if g12 else None
-
             if est_2025:
                 g24 = est_2025 / current_eps - 1
                 peg_24 = fwd_pe / g24 if g24 else None
 
+        current_peg = (trailing_pe / g12) if trailing_pe and g12 else None
+        # industry_peg could be fetched from external source if needed
+
         # =======================================================
-        # BALANCE SHEET – NEW SECTION
+        # BALANCE SHEET METRICS
         # =======================================================
         bs = stock.balance_sheet
         if bs is not None and not bs.empty:
-            bs = bs.T  # make date index
-
-            # Safe getters
+            bs = bs.T  # transpose
             cash = safe(bs.get("Cash And Cash Equivalents", [None])[-1])
             current_assets = safe(bs.get("Total Current Assets", [None])[-1])
             current_liabilities = safe(bs.get("Total Current Liabilities", [None])[-1])
-            assets_non_current = safe(bs.get("Other Assets", [None])[-1])
-            liab_non_current = safe(bs.get("Other Liab", [None])[-1])
+            total_assets = safe(bs.get("Total Assets", [None])[-1])
+            total_liabilities = safe(bs.get("Total Liab", [None])[-1])
             equity = safe(bs.get("Total Stockholder Equity", [None])[-1])
-
+            assets_non_current = total_assets - current_assets if total_assets and current_assets else None
+            liab_non_current = total_liabilities - current_liabilities if total_liabilities and current_liabilities else None
         else:
-            cash = current_assets = current_liabilities = None
-            assets_non_current = liab_non_current = equity = None
+            cash = current_assets = current_liabilities = assets_non_current = liab_non_current = equity = None
 
-        # Ratios
-        current_ratio = (
-            current_assets / current_liabilities
-            if current_assets and current_liabilities
-            else None
-        )
-
-        debt_to_equity = (
-            info.get("totalDebt") / equity
-            if equity and info.get("totalDebt")
-            else None
-        )
+        current_ratio = current_assets / current_liabilities if current_assets and current_liabilities else None
+        debt_equity_ratio = total_liabilities / equity if total_liabilities and equity else None
+        roe_py = None
+        if equity and prior_year_annual:
+            roe_py = prior_year_annual / equity  # rough approximation
 
         # =======================================================
-        # GROWTH CALCULATIONS
+        # GROWTH
         # =======================================================
-        growth_2023 = (
-            prior_year_annual / three_years_ago_annual - 1
-            if prior_year_annual and three_years_ago_annual
-            else None
-        )
-
-        growth_2024 = (
-            current_annual / prior_year_annual - 1
-            if current_annual and prior_year_annual
-            else None
-        )
-
-        growth_2025 = (
-            est_2025 / est_2024 - 1
-            if est_2025 and est_2024
-            else None
-        )
+        growth_2023 = (prior_year_annual / three_years_ago_annual - 1) if prior_year_annual and three_years_ago_annual else None
+        growth_2024 = (current_annual / prior_year_annual - 1) if current_annual and prior_year_annual else None
+        growth_2025 = (est_2025 / est_2024 - 1) if est_2025 and est_2024 else None
 
         # =======================================================
         # FINAL RETURN
         # =======================================================
         return {
             "Ticker": ticker,
-
             # Revenue
             "Current": current_annual,
             "Prior_Year": prior_year_annual,
             "3_Years_Ago": three_years_ago_annual,
             "Prior_Year_Q3": prior_year_q3,
             "Current_Year_Q3": current_year_q3,
-
             # Growth
             "QoQ_Change": qoQ_change,
             "Historical_CAGR_3YR": historical_cagr_3yr,
             "Growth_2023": growth_2023,
             "Growth_2024": growth_2024,
             "Growth_2025": growth_2025,
-
             # Estimates
             "Estimate_2023": est_2023,
             "Estimate_2024": est_2024,
             "Estimate_2025": est_2025,
-
             # PEG
             "Forward_PEG_12M": peg_12,
             "Forward_PEG_24M": peg_24,
-
-            # Balance sheet – NEW
+            "Current_PEG": current_peg,
+            "Industry_PEG": industry_peg,
+            "ROE_PY": roe_py,
+            # Balance sheet
             "Cash_Equivalents": cash,
             "Current_Assets": current_assets,
             "Current_Liabilities": current_liabilities,
@@ -264,8 +221,7 @@ def fetch_metrics(ticker):
             "Non_Current_Liabilities": liab_non_current,
             "Equity": equity,
             "Current_Ratio": current_ratio,
-            "Debt_Equity_Ratio": debt_to_equity,
-
+            "Debt_Equity_Ratio": debt_equity_ratio,
             # Other financials
             "Operating_Margin": info.get("operatingMargins"),
             "Net_Margin": info.get("profitMargins"),
@@ -273,14 +229,12 @@ def fetch_metrics(ticker):
             "Total_Debt": info.get("totalDebt"),
             "Total_Cash": info.get("totalCash"),
             "EBITDA": info.get("ebitda"),
-
             # Custom
             "Interest_Expense": interest_expense,
         }
 
     except Exception as e:
-        print(f"[ERROR] Failed to fetch {ticker}: {e}")
-        return None
+        return None  # silently fail, no print
 
 
 def fetch_metrics_with_retry(ticker, retries=3, delay=1):
@@ -306,7 +260,7 @@ def pull_large_cap_dataset(save_path: str = SAVE_PATH, max_workers: int = MAX_WO
         tickers = load_sp500_tickers()
         # Step 1a — Take only first 20 for testing
         if test:
-            tickers = tickers[:len(tickers)]
+            tickers = tickers[:100]#len(tickers)]
 
         #print(f"[INFO] Testing with {len(tickers)} tickers...")
 

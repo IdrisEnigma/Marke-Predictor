@@ -1,7 +1,7 @@
 import requests
 from urllib.parse import quote
 
-SAVE_PATH = "../src/data-pipline/all_SP500_cap_financials.csv"
+SAVE_PATH = "../src/data-pipline/all_SP500_cap_financials_extend.csv"
 
 url = "http://127.0.0.1:8000/pull_large_cap_dataset"
 params = {
